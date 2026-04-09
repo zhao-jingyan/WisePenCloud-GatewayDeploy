@@ -86,6 +86,7 @@ function register_route() {
     local NAME=$2
     local URI=$3
     local SERVICE=$4
+    local EXTRA_CONFIG=${5:-"{}"}
 
     echo ">>> 注册路由 [$NAME] -> $SERVICE"
 
@@ -94,6 +95,7 @@ function register_route() {
         --arg uri "$URI" \
         --arg service "$SERVICE" \
         --argjson tpl "$TPL_ID_GLOBAL" \
+        --argjson extra "$EXTRA_CONFIG" \
         '{
             name: $name,
             uri: $uri,
@@ -103,14 +105,18 @@ function register_route() {
                 discovery_type: "nacos",
                 service_name: $service
             }
-        }')
+        } * $extra')
 
-    local HTTP_STATUS=$(curl -s --noproxy "*" -w "%{http_code}" -o /dev/null "${APISIX_ADMIN}/apisix/admin/routes/${ID}" -X PUT \
+    local RESPONSE=$(curl -s --noproxy "*" -w "\n%{http_code}" "${APISIX_ADMIN}/apisix/admin/routes/${ID}" -X PUT \
       -H "X-API-KEY: ${ADMIN_KEY}" \
       -d "$body")
 
+    local HTTP_BODY=$(echo "$RESPONSE" | sed '$d')
+    local HTTP_STATUS=$(echo "$RESPONSE" | tail -n 1)
+
     if [ "$HTTP_STATUS" -lt 200 ] || [ "$HTTP_STATUS" -ge 300 ]; then
         echo "❌ [Error] 路由 [$NAME] 注册失败！状态码: ${HTTP_STATUS}"
+        echo ">>> APISIX 报错详情: ${HTTP_BODY}" # 打印具体死因
         exit 1
     fi
 }
@@ -128,30 +134,25 @@ echo -e "\n-----------------------------------------"
 
 # 注册服务
 # user-service
-register_route 1 "auth-service" "/auth/*" "wisepen-user-service"
-register_route 2 "user-service" "/user/*" "wisepen-user-service"
-register_route 3 "group-service" "/group/*" "wisepen-user-service"
-register_route 4 "resource-service" "/resource/*" "wisepen-resource-service"
-register_route 5 "file-storage-service" "/storage/*" "wisepen-file-storage-service"
-register_route 6 "document-service" "/document/*" "wisepen-document-service"
-register_route 7 "note-service" "/note/*" "wisepen-note-service"
+register_route 101 "auth-service" "/auth/*" "wisepen-user-service"
+register_route 102 "user-service" "/user/*" "wisepen-user-service"
+register_route 103 "group-service" "/group/*" "wisepen-user-service"
+register_route 201 "chat-service" "/chat/*" "wisepen-chat-service"
+register_route 401 "resource-service" "/resource/*" "wisepen-resource-service"
+register_route 501 "document-service" "/document/*" "wisepen-document-service"
+register_route 601 "file-storage-service" "/storage/*" "wisepen-file-storage-service"
+register_route 701 "note-service" "/note/*" "wisepen-note-service"
 
-# note-collab-service 需要启用 WebSocket 支持，无法使用通用函数
-echo ">>> 注册路由 [note-collab-service] -> wisepen-note-collab-service (WebSocket)"
-curl -s -o /dev/null "${APISIX_ADMIN}/apisix/admin/routes/8" -X PUT \
-  -H "X-API-KEY: ${ADMIN_KEY}" \
-  -d '{
-    "name": "note-collab-service",
-    "uri": "/note-collab/*",
+# note-collab-service 需要启用 WebSocket 支持，同时进行一致性哈希路由
+WS_CONFIG='{
     "enable_websocket": true,
-    "plugin_config_id": 1,
     "upstream": {
-      "type": "chash",
-      "hash_on": "vars",
-      "discovery_type": "nacos",
-      "service_name": "wisepen-note-collab-service"
+        "type": "chash",
+        "hash_on": "vars",
+        "key": "remote_addr"
     }
-  }'
+}'
+register_route 702 "note-collab-service" "/note-collab/*" "wisepen-note-collab-service" "$WS_CONFIG"
 
 echo -e "\n========================================="
 echo "所有配置已推送到 APISIX !"
