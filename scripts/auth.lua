@@ -51,15 +51,20 @@ return function(conf, ctx)
         -- 设置极短的超时时间(1秒)，防止 Redis 阻塞导致网关雪崩
         red:set_timeouts(1000, 1000, 1000)
 
-        -- 【注意！】开发服务器Docker网络中是redis/6379，部署到正式服务器需改动！
-        -- 【注意！】开发服务器密码为root，部署到正式服务器需改动！
+        -- Redis 地址/密码由 setup.sh 在部署时注入（Jenkins 环境变量 REDIS_AUTH_PASSWORD）
         local ok, err = red:connect("redis", 6379)
         if not ok then
             core.log.error(">>> [Auth] Redis Connect Failed: ", err)
             core.response.exit(500, {code = 500, msg = "网关内部错误：鉴权服务暂时不可用"})
             return
         end
-        local ok, err = red:auth("root")
+        local redis_password = ngx.decode_base64("@@REDIS_PASSWORD_B64@@")
+        if not redis_password then
+            core.log.error(">>> [Auth] Redis password decode failed")
+            core.response.exit(500, {code = 500, msg = "网关内部错误：鉴权服务暂时不可用"})
+            return
+        end
+        local ok, err = red:auth(redis_password)
         if not ok then
             core.log.error(">>> [Auth] Redis Connect Failed: ", err)
             core.response.exit(500, {code = 500, msg = "网关内部错误：鉴权服务暂时不可用"})

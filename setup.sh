@@ -1,13 +1,19 @@
 #!/bin/bash
 
 # ================= 环境变量定义 =================
+SETUP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONTAINER_NAME="apisix" # 容器名
 APISIX_ADMIN="http://${CONTAINER_NAME}:9180"
 ADMIN_KEY="edd1c9f034335f136f87ad84b625c8f1"
 
-# 接收 Jenkins 传入的 CORS 正则数组
-# 默认值保留为本地开发的正则表达式
-CORS_REGEX_JSON=${CORS_REGEX_JSON:-'["^http://localhost:\\d+$", "^http://127\\.0\\.0\\.1:\\d+$"]'}
+# Redis AUTH 密码：由 Jenkins 参数或环境变量 REDIS_AUTH_PASSWORD 传入；未设置时默认 root（与旧行为一致）
+REDIS_AUTH_PASSWORD=${REDIS_AUTH_PASSWORD:-root}
+if command -v base64 >/dev/null 2>&1; then
+    REDIS_PASSWORD_B64=$(printf '%s' "$REDIS_AUTH_PASSWORD" | base64 -w0 2>/dev/null || printf '%s' "$REDIS_AUTH_PASSWORD" | base64 | tr -d '\n')
+else
+    echo "错误: 需要 base64 命令以生成 Redis 密码占位符"
+    exit 1
+fi
 
 # 全局模版
 TPL_ID_GLOBAL=1
@@ -18,6 +24,16 @@ TPL_ID_GLOBAL=1
 if ! command -v jq &> /dev/null; then
     echo "错误: 未检测到 'jq' 命令。请先安装它 (apt install jq / yum install jq)"
     exit 1
+fi
+
+# CORS 正则：环境变量 CORS_REGEX_JSON 非空则直接用；否则读仓库内 JSON（避免 Jenkins/Groovy 里写一堆反斜杠）
+CORS_DEFAULT_FILE="$SETUP_DIR/defaults/cors-allow-origins.json"
+if [ -z "${CORS_REGEX_JSON}" ]; then
+    if [ ! -f "$CORS_DEFAULT_FILE" ]; then
+        echo "错误: 默认 CORS 文件缺失: $CORS_DEFAULT_FILE"
+        exit 1
+    fi
+    CORS_REGEX_JSON=$(jq -c . "$CORS_DEFAULT_FILE")
 fi
 
 # 优雅地读取 Lua 并转义为 JSON 字符串
@@ -36,7 +52,12 @@ function init_infrastructure() {
     echo ">>> [1/2] 加载 Lua 脚本..."
     # 获取转义后的 Lua 脚本字符串
     local LUA_ROUTE=$(load_lua_script "./scripts/route.lua")
-    local LUA_AUTH=$(load_lua_script "./scripts/auth.lua")
+    local AUTH_TMP
+    AUTH_TMP=$(mktemp)
+    sed "s|@@REDIS_PASSWORD_B64@@|${REDIS_PASSWORD_B64}|g" "./scripts/auth.lua" >"$AUTH_TMP"
+    local LUA_AUTH
+    LUA_AUTH=$(load_lua_script "$AUTH_TMP")
+    rm -f "$AUTH_TMP"
 
     echo ">>> [2/2] 初始化全局模板 (ID: ${TPL_ID_GLOBAL})..."
     local body_global=$(jq -n \

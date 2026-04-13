@@ -6,7 +6,9 @@ pipeline {
         string(name: 'BRANCH_NAME', defaultValue: 'main', description: '选择需要构建的 Git 分支')
         // 添加一个布尔型参数，默认不勾选 (false)
         booleanParam(name: 'APPLY_PATCH', defaultValue: false, description: '是否需要应用 APISIX Nacos Lua 补丁并重启网关？(仅当补丁有修改时才需要勾选)')
-        text(name: 'CORS_REGEX_PARAM', defaultValue: '''["^http://localhost:\\\\d+$", "^http://127\\\\.0\\\\.0\\\\.1:\\\\d+$"]''', description: 'APISIX 网关的跨域允许 Origin 列表（必须是合法的 JSON 数组格式）')
+        text(name: 'CORS_REGEX_PARAM', defaultValue: '', description: '可选。留空则使用仓库 defaults/cors-allow-origins.json；填写时请给合法 JSON 数组（一行即可）。')
+        // 与业务/Nacos 所用 Redis 的 requirepass 一致；留空时 setup.sh 仍默认 root（本地兼容）
+        password(name: 'REDIS_AUTH_PASSWORD', defaultValue: '', description: 'Redis AUTH 密码（网关 auth.lua 会话查询用）。生产建议改用 withCredentials 注入并留空此项。')
     }
 
     environment {
@@ -63,6 +65,7 @@ pipeline {
                     sh "chmod +x setup.sh"
                     withEnv([
                         "PATH=${env.WORKSPACE}/bin:${env.PATH}",
+                        "REDIS_AUTH_PASSWORD=${params.REDIS_AUTH_PASSWORD}",
                     ]) {
                         sh "./setup.sh"
                     }
