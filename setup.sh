@@ -17,6 +17,7 @@ fi
 
 # 全局模版
 TPL_ID_GLOBAL=1
+LUA_PING=""
 
 # ================= 工具函数 =================
 
@@ -58,6 +59,7 @@ function init_infrastructure() {
     local LUA_AUTH
     LUA_AUTH=$(load_lua_script "$AUTH_TMP")
     rm -f "$AUTH_TMP"
+    LUA_PING=$(load_lua_script "./scripts/ping.lua")
 
     echo ">>> [2/2] 初始化全局模板 (ID: ${TPL_ID_GLOBAL})..."
     local body_global=$(jq -n \
@@ -107,8 +109,9 @@ function init_infrastructure() {
 
 # ================= 路由注册函数 =================
 
-# 注册服务
-# 参数：ID, Name, URI, NacosService, TemplateID
+# 注册路由
+# 参数：ID, Name, URI, NacosService, ExtraConfig
+# NacosService 为空时注册网关本地路由，不生成 upstream / plugin_config_id
 function register_route() {
     local ID=$1
     local NAME=$2
@@ -116,7 +119,11 @@ function register_route() {
     local SERVICE=$4
     local EXTRA_CONFIG=${5:-"{}"}
 
-    echo ">>> 注册路由 [$NAME] -> $SERVICE"
+    if [ -n "$SERVICE" ]; then
+        echo ">>> 注册路由 [$NAME] -> $SERVICE"
+    else
+        echo ">>> 注册本地路由 [$NAME] -> APISIX"
+    fi
 
     local body=$(jq -n \
         --arg name "$NAME" \
@@ -126,13 +133,20 @@ function register_route() {
         --argjson extra "$EXTRA_CONFIG" \
         '{
             name: $name,
-            uri: $uri,
+            uri: $uri
+        } + (
+            if $service == "" then
+                {}
+            else
+                {
             plugin_config_id: $tpl,
             upstream: {
                 type: "roundrobin",
                 discovery_type: "nacos",
                 service_name: $service
             }
+                }
+            end
         } * $extra')
 
     local RESPONSE=$(curl -s --noproxy "*" -w "\n%{http_code}" "${APISIX_ADMIN}/apisix/admin/routes/${ID}" -X PUT \
@@ -157,10 +171,42 @@ init_infrastructure
 
 echo -e "\n-----------------------------------------"
 
-# 注册服务
-# 格式: register_route  <ID>  <描述>  <路径>  <Nacos服务名>
+# 注册本地服务
 
-# 注册服务
+# 注册网关本地健康检查
+PING_CONFIG=$(jq -n \
+    --argjson script_ping "$LUA_PING" \
+    --argjson cors_regex_arr "$CORS_REGEX_JSON" \
+    '{
+        plugins: {
+            "cors": {
+                "allow_origins": "http://127.0.0.1",
+                "allow_origins_by_regex": $cors_regex_arr,
+                "allow_methods": "GET,HEAD,OPTIONS",
+                "allow_headers": "Content-Type,Authorization,Accept,Origin,X-Requested-With,Cache-Control,Range,X-Developer,ETag,Last-Modified,Access-Control-Request-Private-Network",
+                "expose_headers": "Accept-Ranges,Content-Range,Content-Length",
+                "allow_credential": true,
+                "max_age": 3600
+            },
+            "response-rewrite": {
+                "headers": {
+                    "set": {
+                        "Access-Control-Allow-Private-Network": "true"
+                    }
+                }
+            },
+            "serverless-pre-function": {
+                phase: "rewrite",
+                functions: [$script_ping]
+            }
+        }
+    }')
+
+register_route 1 "ping" "/ping" "" "$PING_CONFIG"
+
+# 注册Nacos服务
+
+# 格式: register_route  <ID>  <描述>  <路径>  <Nacos服务名>
 # user-service
 register_route 101 "auth-service" "/auth/*" "wisepen-user-service"
 register_route 102 "user-service" "/user/*" "wisepen-user-service"
