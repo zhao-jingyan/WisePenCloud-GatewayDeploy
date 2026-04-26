@@ -164,11 +164,28 @@ function register_ping_route() {
     local body=$(jq -n \
         --arg uri "$URI" \
         --argjson script_ping "$LUA_PING" \
+        --argjson cors_regex_arr "$CORS_REGEX_JSON" \
         '{
             name: "ping",
             uri: $uri,
-            methods: ["GET", "HEAD"],
+            methods: ["GET", "HEAD", "OPTIONS"],
             plugins: {
+                "cors": {
+                    "allow_origins": "http://127.0.0.1",
+                    "allow_origins_by_regex": $cors_regex_arr,
+                    "allow_methods": "GET,HEAD,OPTIONS",
+                    "allow_headers": "Content-Type,Authorization,Accept,Origin,X-Requested-With,Cache-Control,Range,X-Developer,ETag,Last-Modified,Access-Control-Request-Private-Network",
+                    "expose_headers": "Accept-Ranges,Content-Range,Content-Length",
+                    "allow_credential": true,
+                    "max_age": 3600
+                },
+                "response-rewrite": {
+                    "headers": {
+                        "set": {
+                            "Access-Control-Allow-Private-Network": "true"
+                        }
+                    }
+                },
                 "serverless-pre-function": {
                     phase: "rewrite",
                     functions: [$script_ping]
