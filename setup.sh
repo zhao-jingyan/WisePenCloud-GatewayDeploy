@@ -171,8 +171,7 @@ init_infrastructure
 
 echo -e "\n-----------------------------------------"
 
-# 注册服务
-# 格式: register_route  <ID>  <描述>  <路径>  <Nacos服务名>
+# 注册本地服务
 
 # 注册网关本地健康检查
 PING_CONFIG=$(jq -n \
@@ -202,9 +201,12 @@ PING_CONFIG=$(jq -n \
             }
         }
     }')
+
 register_route 1 "ping" "/ping" "" "$PING_CONFIG"
 
-# 注册服务
+# 注册Nacos服务
+
+# 格式: register_route  <ID>  <描述>  <路径>  <Nacos服务名>
 # user-service
 register_route 101 "auth-service" "/auth/*" "wisepen-user-service"
 register_route 102 "user-service" "/user/*" "wisepen-user-service"
