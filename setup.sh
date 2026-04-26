@@ -187,7 +187,7 @@ function register_ping_route() {
                     }
                 },
                 "serverless-pre-function": {
-                    phase: "rewrite",
+                    phase: "access",
                     functions: [$script_ping]
                 }
             }
