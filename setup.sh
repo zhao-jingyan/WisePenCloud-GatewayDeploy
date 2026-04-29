@@ -161,6 +161,7 @@ function register_route() {
                 discovery_type: "nacos",
                 service_name: $service
             }
+
         } * $extra')
 
     local RESPONSE=$(curl -s --noproxy "*" -w "\n%{http_code}" "${APISIX_ADMIN}/apisix/admin/routes/${ID}" -X PUT \
@@ -177,6 +178,63 @@ function register_route() {
     fi
 }
 
+# 注册网关本地 /ping 健康检查路由
+# 不挂全局模板（避免走 auth/Redis），不依赖任何 Nacos 服务
+function register_ping_route() {
+    local ID=${1:-1}
+    local URI=${2:-/ping}
+
+    echo ">>> 注册本地路由 [ping] -> APISIX (${URI})"
+
+    local LUA_PING
+    LUA_PING=$(load_lua_script "./scripts/ping.lua")
+
+    local body=$(jq -n \
+        --arg uri "$URI" \
+        --argjson script_ping "$LUA_PING" \
+        --argjson cors_regex_arr "$CORS_REGEX_JSON" \
+        '{
+            name: "ping",
+            uri: $uri,
+            methods: ["GET", "HEAD", "OPTIONS"],
+            plugins: {
+                "cors": {
+                    "allow_origins": "http://127.0.0.1",
+                    "allow_origins_by_regex": $cors_regex_arr,
+                    "allow_methods": "GET,HEAD,OPTIONS",
+                    "allow_headers": "Content-Type,Authorization,Accept,Origin,X-Requested-With,Cache-Control,Range,X-Developer,ETag,Last-Modified,Access-Control-Request-Private-Network",
+                    "expose_headers": "Accept-Ranges,Content-Range,Content-Length",
+                    "allow_credential": true,
+                    "max_age": 3600
+                },
+                "response-rewrite": {
+                    "headers": {
+                        "set": {
+                            "Access-Control-Allow-Private-Network": "true"
+                        }
+                    }
+                },
+                "serverless-pre-function": {
+                    phase: "access",
+                    functions: [$script_ping]
+                }
+            }
+        }')
+
+    local RESPONSE=$(curl -s --noproxy "*" -w "\n%{http_code}" "${APISIX_ADMIN}/apisix/admin/routes/${ID}" -X PUT \
+        -H "X-API-KEY: ${ADMIN_KEY}" \
+        -d "$body")
+
+    local HTTP_BODY=$(echo "$RESPONSE" | sed '$d')
+    local HTTP_STATUS=$(echo "$RESPONSE" | tail -n 1)
+
+    if [ "$HTTP_STATUS" -lt 200 ] || [ "$HTTP_STATUS" -ge 300 ]; then
+        echo "❌ [Error] 路由 [ping] 注册失败！状态码: ${HTTP_STATUS}"
+        echo ">>> APISIX 报错详情: ${HTTP_BODY}"
+        exit 1
+    fi
+}
+
 echo "========================================="
 echo "   WisePen 网关部署脚本"
 echo "========================================="
@@ -185,10 +243,12 @@ init_infrastructure
 
 echo -e "\n-----------------------------------------"
 
-# 注册服务
-# 格式: register_route  <ID>  <描述>  <路径>  <Nacos服务名>
+# 注册网关本地路由
+register_ping_route 1 "/ping"
 
 # 注册服务
+
+# 格式: register_route  <ID>  <描述>  <路径>  <Nacos服务名>
 # user-service
 register_route 101 "auth-service" "/auth/*" "wisepen-user-service"
 register_route 102 "user-service" "/user/*" "wisepen-user-service"
