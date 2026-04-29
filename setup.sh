@@ -2,11 +2,30 @@
 
 # ================= 环境变量定义 =================
 SETUP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CONTAINER_NAME="apisix" # 容器名
-APISIX_ADMIN="http://${CONTAINER_NAME}:9180"
-ADMIN_KEY="edd1c9f034335f136f87ad84b625c8f1"
 
-# Redis AUTH 密码：由 Jenkins 参数或环境变量 REDIS_AUTH_PASSWORD 传入；未设置时默认 root（与旧行为一致）
+# 加载 .env（如果存在），方便本地直接 bash setup.sh
+for env_file in "${SETUP_DIR}/.env"; do
+    if [ -f "$env_file" ]; then
+        set -a; . "$env_file"; set +a
+    fi
+done
+
+# APISIX Admin API 地址
+APISIX_ADMIN_HOST=${APISIX_ADMIN_HOST:-apisix}
+APISIX_ADMIN_PORT=${APISIX_ADMIN_PORT:-9180}
+APISIX_ADMIN="http://${APISIX_ADMIN_HOST}:${APISIX_ADMIN_PORT}"
+
+# APISIX Admin Key
+# Jenkins 参数或环境变量 APISIX_ADMIN_KEY 传入
+# 未设置时默认 edd1c9f034335f136f87ad84b625c8f1 （Dev Key）
+ADMIN_KEY=${APISIX_ADMIN_KEY:-edd1c9f034335f136f87ad84b625c8f1}
+
+# Redis 地址
+REDIS_URL=${REDIS_URL:-redis}
+REDIS_PORT=${REDIS_PORT:-6379}
+# Redis AUTH 密码
+# Jenkins 参数或环境变量 REDIS_AUTH_PASSWORD 传入
+# 未设置时默认 root
 REDIS_AUTH_PASSWORD=${REDIS_AUTH_PASSWORD:-root}
 if command -v base64 >/dev/null 2>&1; then
     REDIS_PASSWORD_B64=$(printf '%s' "$REDIS_AUTH_PASSWORD" | base64 -w0 2>/dev/null || printf '%s' "$REDIS_AUTH_PASSWORD" | base64 | tr -d '\n')
@@ -14,6 +33,11 @@ else
     echo "错误: 需要 base64 命令以生成 Redis 密码占位符"
     exit 1
 fi
+
+# 安全切口，由 APISIX 注入到 X-From-Source 头，下游服务校验
+# Jenkins 参数或环境变量 FROM_SOURCE_SECRET 传入
+# 未设置时默认 APISIX-wX0iR6tY
+FROM_SOURCE_SECRET=${FROM_SOURCE_SECRET:-APISIX-wX0iR6tY}
 
 # 全局模版
 TPL_ID_GLOBAL=1
@@ -26,7 +50,7 @@ if ! command -v jq &> /dev/null; then
     exit 1
 fi
 
-# CORS 正则：环境变量 CORS_REGEX_JSON 非空则直接用；否则读仓库内 JSON（避免 Jenkins/Groovy 里写一堆反斜杠）
+# CORS 正则：环境变量 CORS_REGEX_JSON 非空则直接用，否则读仓库内 JSON
 CORS_DEFAULT_FILE="$SETUP_DIR/defaults/cors-allow-origins.json"
 if [ -z "${CORS_REGEX_JSON}" ]; then
     if [ ! -f "$CORS_DEFAULT_FILE" ]; then
@@ -54,7 +78,11 @@ function init_infrastructure() {
     local LUA_ROUTE=$(load_lua_script "./scripts/route.lua")
     local AUTH_TMP
     AUTH_TMP=$(mktemp)
-    sed "s|@@REDIS_PASSWORD_B64@@|${REDIS_PASSWORD_B64}|g" "./scripts/auth.lua" >"$AUTH_TMP"
+    sed -e "s|@@REDIS_PASSWORD_B64@@|${REDIS_PASSWORD_B64}|g" \
+        -e "s|@@REDIS_URL@@|${REDIS_URL}|g" \
+        -e "s|@@REDIS_PORT@@|${REDIS_PORT}|g" \
+        -e "s|@@FROM_SOURCE_SECRET@@|${FROM_SOURCE_SECRET}|g" \
+        "./scripts/auth.lua" >"$AUTH_TMP"
     local LUA_AUTH
     LUA_AUTH=$(load_lua_script "$AUTH_TMP")
     rm -f "$AUTH_TMP"
