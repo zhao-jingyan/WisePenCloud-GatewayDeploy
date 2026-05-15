@@ -51,18 +51,30 @@ return function(conf, ctx)
 
     -- 流量决策
     local final_nodes = {}
+    local gray_hit = false
+    local gray_target = "baseline"
     if target_dev and target_dev ~= "" and #dev_nodes > 0 then
         -- 命中：存在专属节点，将流量全部分发给该开发者
         final_nodes = dev_nodes
+        gray_hit = true
+        gray_target = target_dev
+
         core.log.notice("[Dev-Isolation] Hit developer node for: ", target_dev)
     else
         -- 回退/普通流量：全部走到基线主干节点
         final_nodes = baseline_nodes
+        gray_hit = false
+        gray_target = "baseline"
+
         if target_dev and target_dev ~= "" then
             -- 开发者发了请求，但是他本地没起服务，帮他把流量降级到公共测试环境
             core.log.warn("[Dev-Isolation] Dev node not found, fallback to baseline: ", target_dev)
         end
     end
+    
+    -- 写入灰度观测响应头
+    core.response.set_header("X-Development-Gray-Hit", tostring(gray_hit))
+    core.response.set_header("X-Development-Gray-Target", gray_target)
 
     -- 重写上游配置
     if #final_nodes > 0 then
@@ -85,5 +97,10 @@ return function(conf, ctx)
     else
         -- 极其危险的边缘情况：连主干节点都掉线了
         core.log.error("[Dev-Isolation] ALERT: No available nodes (both dev and baseline empty) for ", service_name)
+
+        return core.response.exit(403, {
+            message = "No available upstream nodes",
+            service = service_name,
+        })
     end
 end
