@@ -42,6 +42,24 @@ FROM_SOURCE_SECRET=${FROM_SOURCE_SECRET:-APISIX-wX0iR6tY}
 # 全局模版
 TPL_ID_GLOBAL=1
 
+# docs-service 路由开关。默认不注册，由 Jenkins/.env 显式开启。
+DEPLOY_DOCS_ROUTE=${DEPLOY_DOCS_ROUTE:-false}
+
+# 前端静态站点 upstream。FRONTEND_HOST 留空时不注册 frontend 兜底路由。
+FRONTEND_HOST=${FRONTEND_HOST:-}
+FRONTEND_PORT=${FRONTEND_PORT:-8085}
+FRONTEND_SCHEME=${FRONTEND_SCHEME:-http}
+if [ -n "$FRONTEND_HOST" ]; then
+    if ! printf '%s' "$FRONTEND_PORT" | grep -Eq '^[0-9]+$'; then
+        echo "错误: FRONTEND_PORT 必须是数字，当前值: ${FRONTEND_PORT}"
+        exit 1
+    fi
+    if [ "$FRONTEND_SCHEME" != "http" ] && [ "$FRONTEND_SCHEME" != "https" ]; then
+        echo "错误: FRONTEND_SCHEME 只支持 http 或 https，当前值: ${FRONTEND_SCHEME}"
+        exit 1
+    fi
+fi
+
 # ================= 工具函数 =================
 
 # 检查 jq 是否安装
@@ -242,6 +260,63 @@ function register_ping_route() {
     fi
 }
 
+# 注册前端静态站点兜底路由
+# 不挂全局模板（避免静态资源走 auth/Redis），通过固定 upstream 转发到前端服务
+function register_frontend_route() {
+    local ID=${1:-901}
+    local URI=${2:-'["/assets/*","/*"]'}
+    local ROUTE_MATCH
+
+    if [ -z "$FRONTEND_HOST" ]; then
+        echo ">>> 跳过前端路由 [frontend]：FRONTEND_HOST 未设置"
+        return
+    fi
+
+    echo ">>> 注册前端路由 [frontend] -> ${FRONTEND_SCHEME}://${FRONTEND_HOST}:${FRONTEND_PORT}"
+
+    if ROUTE_MATCH=$(printf '%s' "$URI" | jq -ec 'select(type == "array" and length > 0 and all(.[]; type == "string")) | {uris: .}' 2>/dev/null); then
+        :
+    else
+        ROUTE_MATCH=$(jq -n --arg uri "$URI" '{uri: $uri}')
+    fi
+
+    local body=$(jq -n \
+        --arg host "$FRONTEND_HOST" \
+        --argjson port "$FRONTEND_PORT" \
+        --arg scheme "$FRONTEND_SCHEME" \
+        --argjson route_match "$ROUTE_MATCH" \
+        '{
+            name: "frontend",
+            methods: ["GET", "HEAD", "OPTIONS"],
+            priority: -100,
+            upstream: {
+                type: "roundrobin",
+                scheme: $scheme,
+                pass_host: "pass",
+                nodes: [
+                    {
+                        host: $host,
+                        port: $port,
+                        weight: 1
+                    }
+                ]
+            }
+        } * $route_match')
+
+    local RESPONSE=$(curl -s --noproxy "*" -w "\n%{http_code}" "${APISIX_ADMIN}/apisix/admin/routes/${ID}" -X PUT \
+        -H "X-API-KEY: ${ADMIN_KEY}" \
+        -d "$body")
+
+    local HTTP_BODY=$(echo "$RESPONSE" | sed '$d')
+    local HTTP_STATUS=$(echo "$RESPONSE" | tail -n 1)
+
+    if [ "$HTTP_STATUS" -lt 200 ] || [ "$HTTP_STATUS" -ge 300 ]; then
+        echo "❌ [Error] 路由 [frontend] 注册失败！状态码: ${HTTP_STATUS}"
+        echo ">>> APISIX 报错详情: ${HTTP_BODY}"
+        exit 1
+    fi
+}
+
 echo "========================================="
 echo "   WisePen 网关部署脚本"
 echo "========================================="
@@ -252,6 +327,13 @@ echo -e "\n-----------------------------------------"
 
 # 注册网关本地路由
 register_ping_route 1 "/ping"
+
+# 注册 API 文档服务
+if [ "$DEPLOY_DOCS_ROUTE" = "true" ]; then
+    register_route 2 "docs-service" '["/docs","/docs/*"]' "wisepen-docs-service"
+else
+    echo ">>> 跳过路由 [docs-service]：DEPLOY_DOCS_ROUTE 未开启"
+fi
 
 # 注册服务
 
@@ -278,6 +360,9 @@ WS_CONFIG='{
     }
 }'
 register_route 702 "note-collab-service" "/note-collab/*" "wisepen-note-collab-service" "$WS_CONFIG"
+
+# 注册前端服务
+register_frontend_route 3 '["/assets/*","/*"]'
 
 echo -e "\n========================================="
 echo "所有配置已推送到 APISIX !"

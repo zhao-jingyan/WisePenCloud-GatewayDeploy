@@ -9,6 +9,10 @@ pipeline {
         text(name: 'CORS_REGEX_PARAM', defaultValue: '', description: '可选。留空则使用仓库 defaults/cors-allow-origins.json；填写时请给合法 JSON 数组（一行即可）。')
         // 与业务/Nacos 所用 Redis 的 requirepass 一致；留空时 setup.sh 仍默认 root（本地兼容）
         password(name: 'REDIS_AUTH_PASSWORD', defaultValue: '', description: 'Redis AUTH 密码（网关 auth.lua 会话查询用）。生产建议改用 withCredentials 注入并留空此项。')
+        booleanParam(name: 'DEPLOY_DOCS_ROUTE', defaultValue: false, description: '是否注册文档路由？(仅当开发服务器部署时才需要勾选)')
+        booleanParam(name: 'DEPLOY_FRONTEND_ROUTE', defaultValue: false, description: '是否注册前端路由？(仅当不通过对象存储服务部署前端时才需要勾选)')
+        string(name: 'FRONTEND_HOST', defaultValue: '', description: '前端服务 IP/Host。DEPLOY_FRONTEND_ROUTE 勾选时必填，留空则跳过注册前端路由。')
+        string(name: 'FRONTEND_PORT', defaultValue: '80', description: '前端服务端口。')
     }
 
     environment {
@@ -63,9 +67,17 @@ pipeline {
                 dir('./') {
                     echo "开始推送到 APISIX Admin API 注册全局插件与路由..."
                     sh "chmod +x setup.sh"
+                    script {
+                        if (params.DEPLOY_FRONTEND_ROUTE && !params.FRONTEND_HOST?.trim()) {
+                            error('DEPLOY_FRONTEND_ROUTE 已勾选，但 FRONTEND_HOST 为空。请填写前端服务 IP/Host。')
+                        }
+                    }
                     withEnv([
                         "PATH=${env.WORKSPACE}/bin:${env.PATH}",
                         "REDIS_AUTH_PASSWORD=${params.REDIS_AUTH_PASSWORD}",
+                        "DEPLOY_DOCS_ROUTE=${params.DEPLOY_DOCS_ROUTE}",
+                        "FRONTEND_HOST=${params.DEPLOY_FRONTEND_ROUTE ? params.FRONTEND_HOST.trim() : ''}",
+                        "FRONTEND_PORT=${params.FRONTEND_PORT}",
                     ]) {
                         sh "./setup.sh"
                     }
