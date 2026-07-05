@@ -136,25 +136,32 @@ function init_infrastructure() {
 # ================= 路由注册函数 =================
 
 # 注册服务
-# 参数：ID, Name, URI, NacosService, TemplateID
+# 参数：ID, Name, URI/URIS, NacosService, ExtraConfig
+# 第三个参数支持单路径字符串，或 JSON 字符串数组，例如 '["/a/*","/b/*"]'
 function register_route() {
     local ID=$1
     local NAME=$2
     local URI=$3
     local SERVICE=$4
     local EXTRA_CONFIG=${5:-"{}"}
+    local ROUTE_MATCH
 
     echo ">>> 注册路由 [$NAME] -> $SERVICE"
 
+    if ROUTE_MATCH=$(printf '%s' "$URI" | jq -ec 'select(type == "array" and length > 0 and all(.[]; type == "string")) | {uris: .}' 2>/dev/null); then
+        :
+    else
+        ROUTE_MATCH=$(jq -n --arg uri "$URI" '{uri: $uri}')
+    fi
+
     local body=$(jq -n \
         --arg name "$NAME" \
-        --arg uri "$URI" \
         --arg service "$SERVICE" \
         --argjson tpl "$TPL_ID_GLOBAL" \
+        --argjson route_match "$ROUTE_MATCH" \
         --argjson extra "$EXTRA_CONFIG" \
         '{
             name: $name,
-            uri: $uri,
             plugin_config_id: $tpl,
             upstream: {
                 type: "roundrobin",
@@ -162,7 +169,7 @@ function register_route() {
                 service_name: $service
             }
 
-        } * $extra')
+        } * $route_match * $extra')
 
     local RESPONSE=$(curl -s --noproxy "*" -w "\n%{http_code}" "${APISIX_ADMIN}/apisix/admin/routes/${ID}" -X PUT \
       -H "X-API-KEY: ${ADMIN_KEY}" \
@@ -248,15 +255,17 @@ register_ping_route 1 "/ping"
 
 # 注册服务
 
-# 格式: register_route  <ID>  <描述>  <路径>  <Nacos服务名>
+# 格式: register_route  <ID>  <描述>  <路径或JSON路径数组>  <Nacos服务名>
 # user-service
 register_route 101 "auth-service" "/auth/*" "wisepen-user-service"
 register_route 102 "user-service" "/user/*" "wisepen-user-service"
 register_route 103 "group-service" "/group/*" "wisepen-user-service"
 register_route 201 "chat-service" "/chat/*" "wisepen-chat-service"
+register_route 301 "skill-service" "/skill/*" "wisepen-ai-asset-service"
+register_route 302 "agent-service" "/agent/*" "wisepen-ai-asset-service"
 register_route 401 "resource-service" "/resource/*" "wisepen-resource-service"
-register_route 501 "document-service" "/document/*" "wisepen-document-service"
-register_route 601 "file-storage-service" "/storage/*" "wisepen-file-storage-service"
+register_route 501 "document-service" '["/document/*","/external/document/*"]' "wisepen-document-service"
+register_route 601 "file-storage-service" '["/storage/*","/external/storage/*"]' "wisepen-file-storage-service"
 register_route 701 "note-service" "/note/*" "wisepen-note-service"
 
 # note-collab-service 需要启用 WebSocket 支持，同时进行一致性哈希路由
